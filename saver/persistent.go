@@ -9,7 +9,7 @@ import (
 )
 
 type PersistentSQL struct {
-	object        interface{}
+	objectType    reflect.Type
 	id            string
 	structure     map[string]string
 	fields        []string
@@ -33,8 +33,8 @@ var typeMapping = map[string]string{
 	"string": "VARCHAR(255)",
 }
 
-func (m *DbManager) NewPersistentSQL(obj interface{}) (object *PersistentSQL, err error) {
-	object, err = m.CreatePersistentSQL(obj)
+func (m *DbManager) NewPersistentSQL(objType reflect.Type) (object *PersistentSQL, err error) {
+	object, err = m.CreatePersistentSQL(objType)
 	if err != nil {
 		return nil, err
 	}
@@ -48,13 +48,12 @@ func (m *DbManager) NewPersistentSQL(obj interface{}) (object *PersistentSQL, er
 
 }
 
-func (m *DbManager) CreatePersistentSQL(obj interface{}) (object *PersistentSQL, err error) {
-
-	objType := reflect.TypeOf(obj).Elem()
+func (m *DbManager) CreatePersistentSQL(objType reflect.Type) (object *PersistentSQL, err error) {
 
 	object = new(PersistentSQL)
-	object.object = obj
+
 	object.structure = make(map[string]string)
+	object.objectType = objType
 	object.relations = make(map[string]string)
 	object.keys = make(map[string]string)
 	object.fields = []string{}
@@ -100,7 +99,7 @@ func (m *DbManager) CreatePersistentSQL(obj interface{}) (object *PersistentSQL,
 func (m *DbManager) GenStmts(object *PersistentSQL) error {
 
 	// Generating the Statements
-	objType := reflect.TypeOf(object.object).Elem()
+	objType := object.objectType
 
 	// Gathering the fields in order
 	fields := make([]string, 0, objType.NumField())
@@ -140,7 +139,15 @@ func (m *DbManager) GenStmts(object *PersistentSQL) error {
 	object.populateStmt = make(map[string]*sql.Stmt)
 
 	for relationField, target := range object.relations {
-		targetSQL, err := m.GetPersistentSQLByName(target)
+
+		targetF, _ := objType.FieldByName(relationField)
+		targetType := targetF.Type
+
+		if targetType.Kind() == reflect.Slice {
+			targetType = targetType.Elem()
+		}
+
+		targetSQL, err := m.GetPersistentSQLByType(targetType.Elem())
 		if err != nil {
 			return err
 		}
@@ -193,12 +200,16 @@ type DbManager struct {
 	store      map[string]interface{}
 }
 
+/*
+ * Create the table associated with a struct
+ * If a table with the same name exists it is deleted
+ */
 func (m *DbManager) CreateTable(objRaw interface{}) error {
 
 	// Prepare the SQL Requests
 	// NB: Impossible to prepare SQL statement on DROP and CREATE TABLE
 
-	obj, err := m.CreatePersistentSQL(objRaw)
+	obj, err := m.CreatePersistentSQL(reflect.TypeOf(objRaw).Elem())
 	if err != nil {
 		return err
 	}
@@ -218,7 +229,15 @@ func (m *DbManager) CreateTable(objRaw interface{}) error {
 	}
 
 	for field, target := range obj.keys {
-		objSQL, err := m.GetPersistentSQLByName(target)
+
+		targetF, _ := obj.objectType.FieldByName(field)
+		targetType := targetF.Type
+
+		if targetType.Kind() == reflect.Slice {
+			targetType = targetType.Elem()
+		}
+
+		objSQL, err := m.GetPersistentSQLByType(targetType.Elem())
 		if err != nil {
 			return err
 		}
@@ -254,26 +273,18 @@ func (m *DbManager) CreateTable(objRaw interface{}) error {
 
 }
 
-func (m *DbManager) GetPersistentSQLByName(name string) (objSQL *PersistentSQL, err error) {
-
-	objSQL, ok := m.objectsSQL[name]
-
-	if !ok {
-		return nil, errors.New(fmt.Sprintf("Object %v  not referenced", name))
-
-	}
-
-	return objSQL, nil
+func (m *DbManager) GetPersistentSQL(obj interface{}) (objSQL *PersistentSQL, err error) {
+	return m.GetPersistentSQLByType(reflect.TypeOf(obj).Elem())
 
 }
 
-func (m *DbManager) GetPersistentSQL(obj interface{}) (objSQL *PersistentSQL, err error) {
+func (m *DbManager) GetPersistentSQLByType(objType reflect.Type) (objSQL *PersistentSQL, err error) {
 
-	name := reflect.TypeOf(obj).Elem().Name()
+	name := objType.Name()
 	objSQL, ok := m.objectsSQL[name]
 
 	if !ok {
-		objSQL, err = m.NewPersistentSQL(obj)
+		objSQL, err = m.NewPersistentSQL(objType)
 		if err != nil {
 			return nil, err
 		}
@@ -314,6 +325,9 @@ func (m *DbManager) Save(obj interface{}) error {
 
 	field := objValue.FieldByName(objectSQL.id)
 	field.SetInt(id)
+
+	key := fmt.Sprintf("%v%v", objectSQL.name, id)
+	m.store[key] = objValue.Addr()
 
 	return err
 
@@ -373,8 +387,15 @@ func (m *DbManager) getObjValues(obj interface{}) ([]interface{}, error) {
 		}
 
 		if objType.Field(i).Tag.Get("type") == "ManyToOne" {
-			targetSQL, err := m.GetPersistentSQLByName(objectSQL.keys[fieldName])
 
+			targetF, _ := objType.FieldByName(fieldName)
+			targetType := targetF.Type
+
+			if targetType.Kind() == reflect.Slice {
+				targetType = targetType.Elem()
+			}
+
+			targetSQL, err := m.GetPersistentSQLByType(targetType.Elem())
 			if err != nil {
 				return nil, err
 			}
@@ -401,7 +422,7 @@ func (m *DbManager) getObjValues(obj interface{}) ([]interface{}, error) {
 
 }
 
-func (m *DbManager) Delete(obj interface{}) error {
+func (m *DbManager) EjectFromCache(obj interface{}) error {
 	objectSQL, err := m.GetPersistentSQL(obj)
 	if err != nil {
 		return err
@@ -411,11 +432,94 @@ func (m *DbManager) Delete(obj interface{}) error {
 	field := objValue.FieldByName(objectSQL.id)
 	ID := field.Int()
 
-	// Take care of dependencies
+	key := fmt.Sprintf("%v%v", objectSQL.name, ID)
+	delete(m.store, key)
+
+	return nil
+}
+
+func (m *DbManager) Delete(obj interface{}) error {
+	objectSQL, err := m.GetPersistentSQL(obj)
+	if err != nil {
+		return err
+	}
+
+	objValue := reflect.ValueOf(obj).Elem()
+	fieldId := objValue.FieldByName(objectSQL.id)
+	ID := fieldId.Int()
+
+	// Delete in the cache
+	key := fmt.Sprintf("%v%v", objectSQL.name, ID)
+	delete(m.store, key)
+
+	// Take care of dependencies in SQL
 	for field := range objectSQL.relations {
 		_, err := objectSQL.relationsStmt[field].Exec(ID)
 		if err != nil {
 			return err
+		}
+	}
+
+	// Take care of dependencies in Cache
+
+	// The object is a master
+	for field := range objectSQL.relations {
+		elements := objValue.FieldByName(field)
+		length := elements.Len()
+
+		for i := 0; i < length; i++ {
+			element := elements.Index(i)
+			targetSQL, err := m.GetPersistentSQL(element.Interface())
+			if err != nil {
+				return err
+			}
+			for key, master := range targetSQL.keys {
+				if master == objectSQL.name {
+					masterElement := element.Elem().FieldByName(key)
+					if !masterElement.Elem().IsValid() {
+						continue
+					}
+					masterId := masterElement.Elem().FieldByName(objectSQL.id).Int()
+					if masterId == ID {
+						masterElement.Set(reflect.Zero(masterElement.Type()))
+					}
+				}
+			}
+
+		}
+
+	}
+
+	// The object is a slave
+	for field := range objectSQL.keys {
+		masterElement := objValue.FieldByName(field)
+		if err != nil {
+			return err
+		}
+		targetSQL, err := m.GetPersistentSQL(masterElement.Interface())
+		if err != nil {
+			return err
+		}
+		for targetField, target := range targetSQL.relations {
+			if target == objectSQL.name {
+				if !masterElement.Elem().IsValid() {
+					continue
+				}
+				targetElement := masterElement.Elem().FieldByName(targetField)
+				length := targetElement.Len()
+
+				for i := 0; i < length; i++ {
+					tElement := targetElement.Index(i)
+					targetId := tElement.Elem().FieldByName(objectSQL.id).Int()
+					if targetId == ID {
+						tmpA := targetElement.Slice(0, i)
+						tmpB := targetElement.Slice(min(i+1, length), length)
+						targetElement.Set(reflect.AppendSlice(tmpA, tmpB))
+					}
+
+				}
+			}
+
 		}
 	}
 
@@ -482,7 +586,6 @@ func (m *DbManager) Populate(obj interface{}) error {
 func (m *DbManager) Retrieve(ID int, dst interface{}) error {
 
 	obj := reflect.Indirect(reflect.ValueOf(dst)).Interface()
-	fmt.Println(reflect.TypeOf(obj))
 
 	objectSQL, err := m.GetPersistentSQL(obj)
 	if err != nil {
@@ -497,6 +600,7 @@ func (m *DbManager) Retrieve(ID int, dst interface{}) error {
 
 	if data, ok := m.store[key]; ok {
 		reflect.ValueOf(dst).Elem().Set(data.(reflect.Value))
+		fmt.Println("Hit from cache", key)
 		return nil
 	}
 
@@ -570,4 +674,11 @@ func NewDbManager(credentials string) (dbManager *DbManager, err error) {
 
 	return
 
+}
+
+func min(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
