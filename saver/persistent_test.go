@@ -39,7 +39,7 @@ type testSQL struct {
 	Keya    string `type:"TEXT"`
 	Keyb    int
 	Keyx    int
-	Copains []copain `type:"OneToMany" object:"copain"`
+	Copains []*copain `type:"OneToMany" object:"copain"`
 }
 
 func TestCreatePersistentSQL(t *testing.T) {
@@ -121,6 +121,16 @@ func TestCreatePersistentSQL(t *testing.T) {
 	}
 
 	objB.Id = 1
+
+	err = db.Populate(objA)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if len(objA.Copains) < 1 || objA.Copains[0].Name != "toto" {
+		t.Error("Error retrieving relations")
+
+	}
 
 	err = db.Delete(objA)
 	if err != nil {

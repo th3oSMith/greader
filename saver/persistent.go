@@ -21,6 +21,7 @@ type PersistentSQL struct {
 	deleteStmt    *sql.Stmt
 	updateStmt    *sql.Stmt
 	relationsStmt map[string]*sql.Stmt
+	populateStmt  map[string]*sql.Stmt
 }
 
 func (p *PersistentSQL) hasStmts() bool {
@@ -136,6 +137,7 @@ func (m *DbManager) GenStmts(object *PersistentSQL) error {
 
 	// Relations Statements
 	object.relationsStmt = make(map[string]*sql.Stmt)
+	object.populateStmt = make(map[string]*sql.Stmt)
 
 	for relationField, target := range object.relations {
 		targetSQL, err := m.GetPersistentSQLByName(target)
@@ -158,6 +160,14 @@ func (m *DbManager) GenStmts(object *PersistentSQL) error {
 			return err
 		}
 		object.relationsStmt[relationField] = stmt
+
+		sql = fmt.Sprintf("SELECT %v FROM `%v` WHERE %v = ?;", targetSQL.id, target, targetField)
+
+		stmt, err = m.db.Prepare(sql)
+		if err != nil {
+			return err
+		}
+		object.populateStmt[relationField] = stmt
 
 	}
 
@@ -426,9 +436,53 @@ func (m *DbManager) Delete(obj interface{}) error {
 	return nil
 }
 
+func (m *DbManager) Populate(obj interface{}) error {
+	objectSQL, err := m.GetPersistentSQL(obj)
+	if err != nil {
+		return err
+	}
+
+	objValue := reflect.ValueOf(obj).Elem()
+	field := objValue.FieldByName(objectSQL.id)
+	ID := field.Int()
+
+	// Loading all relations
+	for field := range objectSQL.relations {
+		rows, err := objectSQL.populateStmt[field].Query(ID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var childId int
+			if err := rows.Scan(&childId); err != nil {
+				return err
+			}
+
+			fieldType, _ := reflect.TypeOf(obj).Elem().FieldByName(field)
+			tmp := reflect.New(fieldType.Type.Elem())
+			ff := tmp.Elem().Interface()
+
+			err := m.Retrieve(childId, &ff)
+			if err != nil {
+				return err
+			}
+			objValue.FieldByName(field).Set(reflect.Append(objValue.FieldByName(field), reflect.ValueOf(ff)))
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+
+}
+
 func (m *DbManager) Retrieve(ID int, dst interface{}) error {
 
 	obj := reflect.Indirect(reflect.ValueOf(dst)).Interface()
+	fmt.Println(reflect.TypeOf(obj))
 
 	objectSQL, err := m.GetPersistentSQL(obj)
 	if err != nil {
