@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
 	"strings"
@@ -12,6 +13,7 @@ import (
 func Serve() {
 	http.Handle("/test", loggingHandler(http.HandlerFunc(testHandler)))
 	http.Handle("/panic", loggingHandler(recoverHandler(http.HandlerFunc(panicHandler))))
+	http.HandleFunc("/websocket", websocketEchoHandler)
 
 	yes := singleUserAuthenticator{"tata", "yoyo"}
 	http.Handle("/protected", loggingHandler(recoverHandler(yes.authHandler(http.HandlerFunc(testHandler)))))
@@ -46,6 +48,27 @@ func recoverHandler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func websocketEchoHandler(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Fprintf(w, "Upgrade failed: %v", err)
+		return
+	}
+
+	for {
+		messageType, p, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("[WebSocket] Error Reading message: %v\n", err)
+			continue
+		}
+		if err = conn.WriteMessage(messageType, p); err != nil {
+			log.Printf("[WebSocket] Error Eriting message %v (%v): %v\n", string(p), messageType, err)
+			continue
+		}
+	}
+
 }
 
 type Authenticator interface {
@@ -142,4 +165,11 @@ func (w *myResponseWriter) Status() int {
 
 func NewResponseWriter(w http.ResponseWriter) MyResponseWriter {
 	return &myResponseWriter{w, 200}
+}
+
+// WebSocket Test
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
 }

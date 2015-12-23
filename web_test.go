@@ -2,9 +2,11 @@ package main_test
 
 import (
 	"bytes"
+	"github.com/gorilla/websocket"
 	"github.com/th3osmith/greader"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -75,6 +77,42 @@ func TestAuth(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Error("Bad Status", resp.StatusCode)
 	}
+
+}
+
+func TestWebSocket(t *testing.T) {
+
+	u := url.URL{Scheme: "ws", Host: "localhost:3000", Path: "/websocket"}
+
+	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		t.Error("dial:", err)
+		return
+	}
+	defer c.Close()
+
+	confirmation := make(chan bool)
+
+	go func() {
+		defer c.Close()
+
+		for {
+			_, _, err := c.ReadMessage()
+			if err != nil {
+				t.Error("Error Reading websocket:", err)
+				confirmation <- false
+				return
+			}
+
+			confirmation <- true
+			return
+		}
+
+	}()
+
+	err = c.WriteMessage(websocket.TextMessage, []byte("Coucou"))
+
+	<-confirmation
 
 }
 
