@@ -1,7 +1,11 @@
 package pure
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/gorilla/websocket"
+	"log"
+	"net/http"
 )
 
 const (
@@ -146,21 +150,98 @@ func (rw *PureResponseWriter) Fail() {
 
 var ResponseAction = map[bool]map[string]string{
 	true: map[string]string{
-		"create":  "CREATED",
-		"delete":  "DELETED",
-		"update":  "UPDATED",
-		"retrive": "RETRIEVED",
-		"flush":   "FLUSHED",
+		"create":   "CREATED",
+		"delete":   "DELETED",
+		"update":   "UPDATED",
+		"retrieve": "RETRIEVED",
+		"flush":    "FLUSHED",
 	},
 	false: map[string]string{
-		"create":  "CREATE_FAIL",
-		"delete":  "DELETE_FAIL",
-		"update":  "UPDATE_FAIL",
-		"retrive": "RETRIEVE_FAIL",
-		"flush":   "FLUSHED_FAIL",
+		"create":   "CREATE_FAIL",
+		"delete":   "DELETE_FAIL",
+		"update":   "UPDATE_FAIL",
+		"retrieve": "RETRIEVE_FAIL",
+		"flush":    "FLUSHED_FAIL",
 	},
 }
 
 func GetResponseAction(requestAction string, success bool) string {
 	return ResponseAction[success][requestAction]
+}
+
+type HttpHandler struct {
+	muxer PureMux
+}
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+}
+
+func (handler HttpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Fprintf(w, "Upgrade failed: %v", err)
+		return
+	}
+
+	// Create the PureConnection
+	// Every message from this conn will be handled here so no need to store it outside
+	pureConn := WebsocketConn{Conn: conn, Muxer: &handler.muxer}
+
+	for {
+
+		// We might want to add logging at sone point
+		// TODO
+
+		//  Discard message Type, if not text the unmarshaling will fail anyway
+		_, p, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("[WebSocket] Error Reading message: %v\n", err)
+			continue
+		}
+
+		msg := PureMsg{}
+
+		err = json.Unmarshal(p, &msg)
+
+		if err != nil {
+			log.Printf("[WebSocket] Error (%v) Unmarshalling message: %v\n", err, string(p))
+			continue
+		}
+
+		// Pass the request to the Pureconn that will transmit it to the Muxer
+		// The Muxer will then use the PureConn to send the response
+		pureConn.Handle(msg)
+	}
+
+}
+
+func WebsocketHandler(mux PureMux) (handler http.Handler) {
+	handler = HttpHandler{muxer: mux}
+	return
+}
+
+// For now we will keep no state I thinkm but in the future we might wanna keep track of the progression
+// of the different transactions the Client has with the server
+type WebsocketConn struct {
+	Conn  *websocket.Conn
+	Muxer *PureMux
+}
+
+func (c *WebsocketConn) Send(msg PureMsg) {
+
+	// Serialization of the PureMsg
+	jsonMsg, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("Error serializing Websocket response %v", msg)
+	}
+
+	// Send using the websocket conn
+	c.Conn.WriteMessage(websocket.TextMessage, []byte(jsonMsg))
+}
+
+func (c *WebsocketConn) Handle(msg PureMsg) {
+	req := PureReq{Msg: msg, Conn: c}
+	c.Muxer.Handle(req)
 }

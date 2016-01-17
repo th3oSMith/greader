@@ -2,8 +2,10 @@ package main_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"github.com/gorilla/websocket"
 	"github.com/th3osmith/greader"
+	"github.com/th3osmith/greader/pure"
 	"log"
 	"net/http"
 	"net/url"
@@ -111,6 +113,58 @@ func TestWebSocket(t *testing.T) {
 	}()
 
 	err = c.WriteMessage(websocket.TextMessage, []byte("Coucou"))
+
+	<-confirmation
+
+}
+
+func TestPureWebSocket(t *testing.T) {
+
+	u := url.URL{Scheme: "ws", Host: "localhost:3000", Path: "/pure"}
+
+	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		t.Error("dial:", err)
+		return
+	}
+	defer c.Close()
+
+	confirmation := make(chan bool)
+
+	go func() {
+		defer c.Close()
+
+		for {
+			_, p, err := c.ReadMessage()
+			if err != nil {
+				t.Error("Error Reading websocket:", err)
+				confirmation <- false
+				return
+			}
+
+			if string(p) != "{\"Action\":\"CREATED\",\"DataType\":\"data\",\"LogList\":null,\"RequestMap\":null,\"ResponseMap\":{},\"TransactionMap\":null}" {
+				t.Error("Wrong response received: ", string(p))
+			}
+
+			confirmation <- true
+			return
+		}
+
+	}()
+
+	mm := make(map[string]interface{})
+	mm["id"] = "tata"
+	mm["value"] = "yoyo"
+
+	// Creating Request
+	req := pure.PureMsg{DataType: "data", Action: "create", RequestMap: mm}
+	jsonReq, err := json.Marshal(req)
+
+	if err != nil {
+		t.Error(err)
+	}
+
+	err = c.WriteMessage(websocket.TextMessage, jsonReq)
 
 	<-confirmation
 

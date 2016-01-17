@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"github.com/gorilla/websocket"
+	"github.com/th3osmith/greader/pure"
+	"github.com/th3osmith/greader/test"
 	"log"
 	"net/http"
 	"strings"
@@ -14,6 +16,13 @@ func Serve() {
 	http.Handle("/test", loggingHandler(http.HandlerFunc(testHandler)))
 	http.Handle("/panic", loggingHandler(recoverHandler(http.HandlerFunc(panicHandler))))
 	http.HandleFunc("/websocket", websocketEchoHandler)
+
+	// Pure Test
+	mux := pure.NewPureMux()
+	h := pure_test.NewPureHandler()
+	mux.RegisterHandler("data", h)
+
+	http.Handle("/pure", pure.WebsocketHandler(*mux))
 
 	yes := singleUserAuthenticator{"tata", "yoyo"}
 	http.Handle("/protected", loggingHandler(recoverHandler(yes.authHandler(http.HandlerFunc(testHandler)))))
